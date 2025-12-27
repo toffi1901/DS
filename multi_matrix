@@ -1,0 +1,63 @@
+import numpy as np
+from numba import cuda, types as numba_types
+import time
+import numpy as np
+
+@cuda.jit
+def matrix_multi(a, b, out):
+  tempA = cuda.shared.array((32,32), numba_types.int32)
+  tempB = cuda.shared.array((32,32), numba_types.int32)
+
+  x, y = cuda.grid(2)  #координаты потока в 2d сетке
+  tx = cuda.threadIdx.x #коорд потока в блоке
+  ty = cuda.threadIdx.y
+
+  sum = 0.0
+# по блокам
+  for i in range(0, a.shape[0], 32):
+    if x < a.shape[0] and (i + tx) < a.shape[1]:
+      tempA[tx, ty] = a[x, i + ty]
+    else:
+      tempA[tx, ty] = 0.0  # строки 1ой матрицы
+
+    if (i + ty) < b.shape[0] and y < b.shape[1]:
+      tempB[tx, ty] = b[i + tx, y]
+    else:
+      tempB[tx, ty] = 0.0 # столбцы 2ой
+    cuda.syncthreads()
+
+  #строка из tempA * столбец из tempB
+    for j in range(32):
+      sum += tempA[tx, j] * tempB[j, ty]
+    cuda.syncthreads()
+
+  if x < out.shape[0] and y < out.shape[1]:
+      out[x, y] = sum
+
+n = 1024
+a = np.random.randint(0, 10, (n, n)).astype(np.int32)
+b = np.random.randint(0, 10, (n, n)).astype(np.int32)
+out = np.zeros((n, n), dtype=np.int32)
+
+d_a = cuda.to_device(a)
+d_b = cuda.to_device(b)
+d_out = cuda.to_device(out)
+
+threads_per_block = (32, 32)
+blocks_per_grid_x = (n + threads_per_block[0] - 1) // threads_per_block[0]
+blocks_per_grid_y = (n + threads_per_block[1] - 1) // threads_per_block[1]
+blocks_per_grid = (blocks_per_grid_x, blocks_per_grid_y)
+
+%timeit matrix_multi[blocks_per_grid, threads_per_block](d_a, d_b, d_out)
+cuda.synchronize()
+
+result = d_out.copy_to_host()
+print("Результат:", result.shape)
+print("Матрица A:")
+print(a)
+print("\nМатрица B:")
+print(b)
+print("\nРезультат умножения A × B:")
+print(result)
+
+%timeit result_cpu = np.dot(a, b)
